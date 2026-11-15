@@ -8,6 +8,12 @@ DAILY_PER_INSTALL = "3"   # free questions per Fixel install per UTC day
 DAILY_PER_IP = "30"       # per network: a whole school can share one IP
 DAILY_TOTAL = "200"       # everyone together; keeps the owner's own free quota safe
 
-[[kv_namespaces]]
-binding = "TRIAL"
-id = "REPLACE_WITH_KV_ID"  # from `npx wrangler kv namespace create TRIAL`
+# One TrialCounter per UTC day holds the counts. A Durable Object runs one request at a time, so the
+# limits can't be raced the way KV could be. SQLite-backed, so it works on the Workers Free plan.
+[[durable_objects.bindings]]
+name = "COUNTER"
+class_name = "TrialCounter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TrialCounter"]

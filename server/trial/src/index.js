@@ -4,6 +4,10 @@
 // Limits, all per UTC day: DAILY_PER_INSTALL questions per Fixel install, DAILY_PER_IP per network
 // (schools share one IP, so it's higher), and DAILY_TOTAL across everyone, which protects the owner's
 // own free-tier quota. Only Gemini free-tier models are ever called, whatever the client asks for.
+//
+// The counts live in one TrialCounter Durable Object per day. A Durable Object handles one request at a
+// time, so "check all three limits, then take a question" can't interleave: KV can't do that, and ten
+// parallel requests would all read "2 used" and all get through.
 
 const MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
 const GEMINI = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -29,10 +33,8 @@ export async function handle(request, env, upstream) {
   if (url.pathname !== "/v1/ask") return json(404, { error: "not_found" });
   if (request.method !== "POST") return json(405, { error: "method" });
 
-  const length = Number(request.headers.get("Content-Length") || "0");
-  if (!Number.isFinite(length) || length > MAX_BODY) return json(413, { error: "too_big", message: "Those screenshots are too big for the free trial." });
-  const raw = await request.text();
-  if (raw.length > MAX_BODY) return json(413, { error: "too_big", message: "Those screenshots are too big for the free trial." });
+  const raw = await readCapped(request, MAX_BODY);
+  if (raw === null) return json(413, { error: "too_big", message: "Those screenshots are too big for the free trial." });
 
   let body;
   try {
@@ -50,12 +52,18 @@ export async function handle(request, env, upstream) {
     ip: intVar(env.DAILY_PER_IP, 30),
     total: intVar(env.DAILY_TOTAL, 200),
   };
-  const keys = { install: `i:${day}:${body.install_id}`, ip: `p:${day}:${ip}`, total: `t:${day}` };
-  const [usedInstall, usedIp, usedTotal] = await Promise.all([count(env, keys.install), count(env, keys.ip), count(env, keys.total)]);
+  const keys = { install: `i:${body.install_id}`, ip: `p:${ip}`, total: "t" };
+  const counter = env.COUNTER.get(env.COUNTER.idFromName(day));
+  const call = async (path, payload) => (await counter.fetch(`https://counter${path}`, { method: "POST", body: JSON.stringify(payload) })).json();
 
-  if (usedInstall >= limits.install) return used(0, `You've used today's ${limits.install} free questions.`);
-  if (usedIp >= limits.ip) return used(limits.install - usedInstall, "Your network has used today's free questions.");
-  if (usedTotal >= limits.total) return used(limits.install - usedInstall, "The free trial is full for today.");
+  // Take a question before asking Gemini, and give it back if no model answers.
+  const slot = await call("/reserve", { keys, limits });
+  if (!slot.ok) {
+    if (slot.full === "install") return used(0, `You've used today's ${limits.install} free questions.`);
+    if (slot.full === "ip") return used(slot.remaining, "Your network has used today's free questions.");
+    return used(slot.remaining, "The free trial is full for today.");
+  }
+  const refund = () => call("/refund", { keys });
 
   for (const model of MODELS) {
     const generationConfig = { maxOutputTokens: MAX_OUTPUT_TOKENS };
@@ -66,19 +74,21 @@ export async function handle(request, env, upstream) {
       body: JSON.stringify({ contents: body.contents, systemInstruction: { parts: [{ text: body.system }] }, generationConfig }),
     });
     if (answer.status === 429 || answer.status === 404 || answer.status >= 500) continue; // next free model
-    if (!answer.ok) return json(502, { error: "upstream", message: `Gemini said ${answer.status}.` });
-    // Counted only once Gemini has agreed to answer, so failures never use up a free question.
-    await Promise.all([bump(env, keys.install, usedInstall), bump(env, keys.ip, usedIp), bump(env, keys.total, usedTotal)]);
+    if (!answer.ok) {
+      await refund();
+      return json(502, { error: "upstream", message: `Gemini said ${answer.status}.` });
+    }
     return new Response(answer.body, {
       status: 200,
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
         "X-Fixel-Model": model,
-        "X-Fixel-Remaining": String(Math.max(0, limits.install - usedInstall - 1)),
+        "X-Fixel-Remaining": String(slot.remaining),
       },
     });
   }
+  await refund(); // no model answered, so this question doesn't count
   return json(503, { error: "busy", message: "Gemini is busy right now. Wait a minute, then press Enter." });
 }
 
@@ -108,12 +118,81 @@ function intVar(value, fallback) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-async function count(env, key) {
-  return Number.parseInt((await env.TRIAL.get(key)) || "0", 10) || 0;
+// Reads the body as a stream and stops as soon as it passes `max` bytes, so a huge or endless upload is
+// never held in memory. Content-Length is only used to refuse early; it's never trusted to be the real size.
+export async function readCapped(request, max) {
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null && !(/^\d+$/.test(declared) && Number(declared) <= max)) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const c of chunks) {
+    bytes.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
-async function bump(env, key, before) {
-  await env.TRIAL.put(key, String(before + 1), { expirationTtl: 2 * 86400 });
+// One instance per UTC day (idFromName(day)). Counts are loaded once, then every check-and-increment runs
+// with no await in between, so two requests can never both take the last question.
+export class TrialCounter {
+  constructor(state) {
+    this.storage = state.storage;
+    this.counts = new Map();
+    state.blockConcurrencyWhile(async () => {
+      this.counts = await this.storage.list();
+    });
+  }
+
+  async fetch(request) {
+    const { pathname } = new URL(request.url);
+    const { keys, limits } = await request.json();
+    const n = (k) => this.counts.get(k) ?? 0;
+    const remaining = () => Math.max(0, limits.install - n(keys.install));
+
+    if (pathname === "/reserve") {
+      for (const which of ["install", "ip", "total"]) {
+        if (n(keys[which]) >= limits[which]) return Response.json({ ok: false, full: which, remaining: remaining() });
+      }
+      this.bump(keys, +1);
+      // A day's counts are useless after two days, so clear them out then.
+      if ((await this.storage.getAlarm()) === null) await this.storage.setAlarm(Date.now() + 2 * 86_400_000);
+      return Response.json({ ok: true, remaining: remaining() });
+    }
+    if (pathname === "/refund") {
+      this.bump(keys, -1);
+      return Response.json({ ok: true });
+    }
+    return new Response("not found", { status: 404 });
+  }
+
+  bump(keys, by) {
+    const changed = {};
+    for (const k of Object.values(keys)) {
+      const next = Math.max(0, (this.counts.get(k) ?? 0) + by);
+      this.counts.set(k, next);
+      changed[k] = next;
+    }
+    this.storage.put(changed); // the output gate holds the response until this is saved
+  }
+
+  async alarm() {
+    await this.storage.deleteAll();
+    this.counts = new Map();
+  }
 }
 
 function used(remaining, message) {

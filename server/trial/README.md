@@ -9,12 +9,15 @@ shares one IP) and `DAILY_TOTAL` (200, which keeps the owner's own free quota sa
 free-tier models are called, whatever a client asks for. A question is counted only once Gemini starts
 answering, so errors never use one up.
 
+The counts live in a Durable Object (one per day), not KV: it handles one request at a time, so ten
+requests sent at once can't all squeeze through on the last free question. Uploads are read as a
+stream and cut off at 12 MB, whatever `Content-Length` claims.
+
 ## Deploy (once)
 
 ```sh
 cd server/trial
 npx wrangler@4 login                          # opens the browser
-npx wrangler@4 kv namespace create TRIAL      # paste the id it prints into wrangler.toml
 npx wrangler@4 secret put GEMINI_API_KEY      # a key from a Google project WITHOUT billing
 npx wrangler@4 deploy                         # prints https://fixel-trial.<you>.workers.dev
 ```

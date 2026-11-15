@@ -2,18 +2,41 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { handle, validate } from "../src/index.js";
+import { handle, validate, TrialCounter } from "../src/index.js";
 
 const ID = "0123456789abcdef0123456789abcdef";
 
-function fakeKV() {
-  const store = new Map();
-  return { store, get: async (k) => store.get(k) ?? null, put: async (k, v) => void store.set(k, v) };
+// Stands in for the COUNTER Durable Object namespace: one TrialCounter per name, with Map-backed storage.
+function fakeCounters() {
+  const instances = new Map();
+  const make = () => {
+    const data = new Map();
+    let alarm = null;
+    const storage = {
+      data,
+      list: async () => new Map(data),
+      put: async (entries) => { for (const [k, v] of Object.entries(entries)) data.set(k, v); },
+      getAlarm: async () => alarm,
+      setAlarm: async (t) => { alarm = t; },
+      deleteAll: async () => data.clear(),
+    };
+    return { storage, counter: new TrialCounter({ storage, blockConcurrencyWhile: (fn) => fn() }) };
+  };
+  return {
+    instances,
+    idFromName: (name) => name,
+    get: (id) => {
+      if (!instances.has(id)) instances.set(id, make());
+      return { fetch: (url, init) => instances.get(id).counter.fetch(new Request(url, init)) };
+    },
+  };
 }
 
 function env(overrides = {}) {
-  return { GEMINI_API_KEY: "secret-key", TRIAL: fakeKV(), ...overrides };
+  return { GEMINI_API_KEY: "secret-key", COUNTER: fakeCounters(), ...overrides };
 }
+
+const today = () => new Date().toISOString().slice(0, 10);
 
 function ask(body = {}, ip = "1.2.3.4") {
   const payload = JSON.stringify({ install_id: ID, system: "sys", contents: [{ role: "user", parts: [{ text: "hi" }] }], ...body });
@@ -68,7 +91,7 @@ test("a busy or rate-limited model falls back, and failures don't use up a quest
   assert.equal(res.headers.get("X-Fixel-Model"), "gemini-3.1-flash-lite");
   const allBusy = await handle(ask(), e, gemini([503, 503, 503, 503]).upstream);
   assert.equal(allBusy.status, 503);
-  assert.equal(e.TRIAL.store.get(`i:${new Date().toISOString().slice(0, 10)}:${ID}`), "1");
+  assert.equal(e.COUNTER.instances.get(today()).storage.data.get(`i:${ID}`), 1);
 });
 
 test("a shared network and the whole trial have their own caps", async () => {
@@ -100,4 +123,27 @@ test("validation rejects anything but text and screenshots", () => {
 test("other paths and methods are refused", async () => {
   assert.equal((await handle(new Request("https://trial.example/"), env(), gemini([]).upstream)).status, 404);
   assert.equal((await handle(new Request("https://trial.example/v1/ask"), env(), gemini([]).upstream)).status, 405);
+});
+
+test("parallel requests can't slip past the daily limit", async () => {
+  const e = env();
+  // Gemini answers after a short wait, so all ten requests are in flight together.
+  const slow = async () => { await new Promise((r) => setTimeout(r, 5)); return new Response("data: {}\n\n", { status: 200 }); };
+  const results = await Promise.all(Array.from({ length: 10 }, () => handle(ask(), e, slow)));
+  assert.equal(results.filter((r) => r.status === 200).length, 3);
+});
+
+test("a streamed body over the cap is refused without a Content-Length", async () => {
+  const chunk = new Uint8Array(1_000_000).fill(32);
+  let sent = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (sent++ < 20) controller.enqueue(chunk); else controller.close();
+    },
+  });
+  const req = new Request("https://trial.example/v1/ask", { method: "POST", body, duplex: "half" });
+  assert.equal(req.headers.get("Content-Length"), null);
+  const res = await handle(req, env(), gemini([]).upstream);
+  assert.equal(res.status, 413);
+  assert.ok(sent <= 14, `read ${sent} MB before stopping`);
 });
