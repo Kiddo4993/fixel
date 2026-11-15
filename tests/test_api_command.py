@@ -9,7 +9,7 @@ from fixel.ui import UI
 
 
 def make_app(tmp_path, console, provider=None):
-    cfg = Config(home=tmp_path, notes_dir=tmp_path / "notes")
+    cfg = Config(home=tmp_path, notes_dir=tmp_path / "notes", free_only=False)  # these test paid keys too
     app = FixelApp(
         cfg,
         UI(console),
@@ -156,3 +156,15 @@ async def test_api_initializes_unloaded_provider(tmp_path, console, monkeypatch)
 def test_help_lists_api_command(console):
     UI(console).help()
     assert "/api" in console.file.getvalue()
+
+
+async def test_free_mode_saves_a_paid_key_but_never_uses_it(tmp_path, console, monkeypatch):
+    monkeypatch.setattr(app_module, "set_api_key", lambda v, k: None)
+    monkeypatch.setattr(app_module, "check_api_key", lambda v, k, m: "ok")
+    made = []
+    app = make_app(tmp_path, console)
+    app.cfg.free_only = True
+    app._provider_factory = lambda alias, cfg: made.append(alias) or FakeProvider()
+    await app.handle_command("/api anthropic sk-ant-api03-paid")
+    assert made == []  # no Claude provider was built, so nothing can bill
+    assert "free mode" in console.file.getvalue()

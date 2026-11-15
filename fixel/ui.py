@@ -282,7 +282,8 @@ class UI:
         self.console.print(Panel(Text(out.rstrip() or "(no output)"), title=title, border_style=style))
 
     def show_case(self, record) -> None:
-        title = f"#{record.id}  {record.created_at:%Y-%m-%d}  {record.mode}: {record.key or record.question}"
+        # Text, not markup: a question like "why does ls [/usr/bin] fail" would crash Rich's markup parser
+        title = Text(f"#{record.id}  {record.created_at:%Y-%m-%d}  {record.mode}: {record.key or record.question}")
         self.console.print(Panel(Markdown(record.answer), title=title, border_style="magenta"))
 
     def show_cases(self, records) -> None:

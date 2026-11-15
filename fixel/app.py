@@ -130,7 +130,11 @@ class FixelApp:
         alias = self.cfg.default_model
         self._open_casefile()
         key_problem = self._load_model(alias)
-        checks = [*self._start_hotkey(), Check("API key", key_problem is None, key_problem or "")]
+        on_trial = getattr(self.provider, "trial", False)
+        checks = [
+            *self._start_hotkey(),
+            Check("free trial: 3 questions a day" if on_trial else "API key", key_problem is None, key_problem or ""),
+        ]
         solved, worked, recent = 0, 0, []
         if self.casefile is not None:
             try:
@@ -182,7 +186,10 @@ class FixelApp:
     async def _capture_worker(self) -> None:
         while True:
             await self._hotkeys.get()
-            await self.capture_once()
+            try:
+                await self.capture_once()
+            except Exception as e:  # one bad shot must not end the worker, or ⌥⌥ silently stops working
+                self.ui.status.flash_msg(f"That screenshot didn't work ({e}). Try ⌥⌥ again.")
             while not self._hotkeys.empty():  # drop taps made during the selection
                 self._hotkeys.get_nowait()
 
@@ -282,6 +289,12 @@ class FixelApp:
         self.session.record_answer(*answer)
         self._remember()
         self.ui.action_bar()
+        left = getattr(self.provider, "remaining", None)  # only the free trial counts questions
+        if left is not None:
+            plural = "question" if left == 1 else "questions"
+            self.ui.info(
+                f"Free trial: {left} {plural} left today. /api gemini adds your own key (free at aistudio.google.com/apikey)."
+            )
         where = self._playground_target(self.session.case.answer)
         if where:
             self.ui.playground_hint("code editor" if where[0].run else "web playground")
@@ -454,7 +467,11 @@ class FixelApp:
             if case.case_id is None or self.casefile is None:
                 self.ui.warn("Nothing to mark yet. Type /worked after a fix works.")
                 return
-            self.casefile.mark_worked(case.case_id)
+            try:
+                self.casefile.mark_worked(case.case_id)
+            except sqlite3.Error as e:
+                self.ui.warn(f"Case file error ({e}); couldn't mark it.")
+                return
             self.ui.react("Nice. Marked as worked. Fixel will reach for this fix first next time.")
         elif name == "copy":
             fix = primary_fix(case.answer) if case.answer else None
@@ -586,6 +603,12 @@ class FixelApp:
 
         validation = check_api_key(vendor, key, target_model)
         self.ui.console.print(validation)
+        if self.cfg.free_only and vendor != "gemini":
+            self.ui.warn(
+                f"Fixel is in free mode, so it won't use this {label} key (it would spend API credits). "
+                "Set free_only = false in ~/.fixel/config.toml to allow it."
+            )
+            return
 
         current_vendor = provider_for_model(self.cfg.models.get(self.model_alias, self.model_alias))
         if self.provider is None or current_vendor == vendor:
@@ -659,13 +682,21 @@ class FixelApp:
             elif not arg:
                 self.ui.warn("Usage: /cases <words to search for>")
             else:
-                records = self.casefile.search(arg)
+                try:
+                    records = self.casefile.search(arg)
+                except sqlite3.Error as e:
+                    self.ui.warn(f"Case file error ({e}).")
+                    return True
                 if records:
                     self.ui.show_cases(records)
                 else:
                     self.ui.info("No matching cases.")
         elif command == "/open":
-            record = self.casefile.get(int(arg)) if self.casefile and arg.isdigit() else None
+            try:
+                record = self.casefile.get(int(arg)) if self.casefile and arg.isdigit() else None
+            except (sqlite3.Error, ValueError) as e:  # ValueError: a damaged date or shot list in that row
+                self.ui.warn(f"Couldn't read case #{arg} ({e}).")
+                return True
             if record is None:
                 self.ui.warn("Usage: /open <number from /cases>")
             else:

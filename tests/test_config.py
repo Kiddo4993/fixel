@@ -6,7 +6,7 @@ from fixel.config import Config, get_api_key, load_config, provider_for_model, w
 
 def test_defaults_without_file(tmp_path):
     cfg = load_config(tmp_path)
-    assert cfg.default_model == "sonnet"
+    assert cfg.default_model == "gemini" and cfg.free_only  # new installs never spend API credits
     assert cfg.models["sonnet"] == "claude-sonnet-5-5"
     assert cfg.shots_dir == tmp_path / "shots"
     assert cfg.casefile_path == tmp_path / "casefile.db"

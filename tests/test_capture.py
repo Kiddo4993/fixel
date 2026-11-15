@@ -47,3 +47,26 @@ async def test_large_capture_is_downscaled(tmp_path, monkeypatch, png):
 def test_png_size_rejects_non_png():
     with pytest.raises(ValueError):
         capture.png_size(b"GIF89a" + b"\x00" * 30)
+
+
+async def test_capture_always_asks_for_png(tmp_path, monkeypatch, png):
+    calls = []
+
+    async def fake_run(*args):
+        calls.append(args)
+        Path(args[-1]).write_bytes(png(10, 10))
+        return 0
+
+    monkeypatch.setattr(capture, "_run", fake_run)
+    await capture.capture_region(tmp_path / "s.png")
+    assert ("-t", "png") == calls[0][3:5]
+
+
+async def test_a_capture_that_is_not_a_png_is_dropped_not_a_crash(tmp_path, monkeypatch):
+    async def fake_run(*args):
+        Path(args[-1]).write_bytes(b"\xff\xd8\xff\xe0 a jpeg")
+        return 0
+
+    monkeypatch.setattr(capture, "_run", fake_run)
+    assert await capture.capture_region(tmp_path / "s.png") is None
+    assert not (tmp_path / "s.png").exists()

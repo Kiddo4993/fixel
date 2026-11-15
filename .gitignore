@@ -50,3 +50,7 @@ htmlcov/
 
 # --- Stray files ------------------------------------------------------------
 /.md
+
+# trial server
+server/trial/node_modules/
+server/trial/.wrangler/

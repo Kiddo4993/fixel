@@ -21,9 +21,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--here", action="store_true", help="run in this terminal instead of opening a Terminal.app window")
     args = parser.parse_args(argv)
 
-    from .config import load_config
+    from .config import ConfigError, load_config
 
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except ConfigError as e:
+        print(e, file=sys.stderr)
+        return 1
     if args.command == "setup":
         from .setup import run_setup
 

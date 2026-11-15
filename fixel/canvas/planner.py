@@ -82,8 +82,12 @@ def _checked(row: dict, assignment: Assignment, today: date) -> Plan:
     return Plan(priority=priority, hours=hours, start_by=start_by, tip=tip)
 
 
-async def make_plans(provider: Provider, assignments: list[Assignment], today: date) -> dict[str, Plan]:
-    plans: dict[str, Plan] = {}
+async def make_plans(
+    provider: Provider, assignments: list[Assignment], today: date, into: dict[str, Plan] | None = None
+) -> dict[str, Plan]:
+    """Plan in batches, adding each batch to `into` as it lands: if a later batch fails, the plans
+    already paid for are kept instead of being asked for again on the next sync."""
+    plans: dict[str, Plan] = {} if into is None else into
     for first in range(0, len(assignments), BATCH):
         batch = assignments[first : first + BATCH]
         reply = ""

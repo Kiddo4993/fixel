@@ -22,14 +22,15 @@ ENV_VARS = {
 DEFAULT_CONFIG_TOML = """\
 # Fixel settings. Delete a line to fall back to its default.
 # name = "Dylan"                # how the homepage greets you (default: your Mac account's first name)
-default_model = "sonnet"        # sonnet | opus | gemini | gpt
+default_model = "gemini"        # sonnet | opus | gemini | gpt
+free_only = true                # only use Gemini's free tier: Claude and GPT always cost API credits
 notes_dir = "~/Fixel Notes"
 recall_threshold = 0.6          # 0-1: how much of a past problem must be on screen for Fixel to reuse it
 double_tap_window = 0.4         # seconds allowed between Right Option taps
 thinking = false                # Claude: think on every answer (slower). /deeper always thinks harder.
 max_tokens = 16000
 animations = true               # Pix's thinking face and the startup moment
-gemini_fallbacks = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]   # tried in order when Gemini is busy
+gemini_fallbacks = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"]   # tried in order when Gemini is busy
 slow_model_seconds = 20         # no words after this long? try the next Gemini model (/deeper allows 3x)
 playground_timeout = 10         # seconds a /code or /ide run may take before Fixel stops it
 canvas_days = 14                # /canvas looks this many days ahead
@@ -42,6 +43,20 @@ gpt = "gpt-4o"
 """
 
 
+# Gemini models Google's pricing page lists with a free tier (checked 2026-11-08,
+# https://ai.google.dev/gemini-api/docs/pricing). Each has its own free quota, so falling back
+# through them stretches the free tier further. Models not here (Pro previews, image models) only
+# answer on a paid project.
+FREE_GEMINI_MODELS = frozenset({
+    "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+})
+PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing"
+# Fixel's free-trial server (server/trial): a few Gemini answers a day for anyone without a key yet.
+# Empty turns the trial off. `trial_url = ""` in config.toml turns it off for one Mac.
+TRIAL_URL = ""
+
+
 def _default_models() -> dict[str, str]:
     return {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "gemini": "gemini-3.6-flash", "gpt": "gpt-4o"}
 
@@ -50,17 +65,21 @@ def _default_models() -> dict[str, str]:
 class Config:
     home: Path
     name: str | None = None
-    default_model: str = "sonnet"
+    default_model: str = "gemini"
+    free_only: bool = True  # refuse every model that bills API credits; false allows Claude and GPT
     notes_dir: Path = field(default_factory=lambda: Path.home() / "Fixel Notes")
     recall_threshold: float = 0.6
     double_tap_window: float = 0.4
     thinking: bool = False
     max_tokens: int = 16000
     animations: bool = True
-    gemini_fallbacks: list[str] = field(default_factory=lambda: ["gemini-3.5-flash", "gemini-3.5-flash-lite"])
+    gemini_fallbacks: list[str] = field(
+        default_factory=lambda: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
+    )
     slow_model_seconds: float = 20.0
     playground_timeout: float = 10.0
     canvas_days: int = 14
+    trial_url: str = TRIAL_URL
     models: dict[str, str] = field(default_factory=_default_models)
 
     @property
@@ -92,11 +111,18 @@ def fixel_home() -> Path:
     return Path(os.environ.get("FIXEL_HOME", Path.home() / ".fixel")).expanduser()
 
 
+class ConfigError(Exception):
+    """config.toml can't be read. The message says where the mistake is."""
+
+
 def load_config(home: Path | None = None) -> Config:
     cfg = Config(home=home or fixel_home())
     if cfg.config_path.exists():
-        data = tomllib.loads(cfg.config_path.read_text())
-        for name in ("name", "default_model", "recall_threshold", "double_tap_window", "thinking", "max_tokens", "animations", "gemini_fallbacks", "slow_model_seconds", "playground_timeout", "canvas_days"):
+        try:
+            data = tomllib.loads(cfg.config_path.read_text())
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"{cfg.config_path} has a typo ({e}). Fix that line, or delete the file to start fresh.") from None
+        for name in ("name", "default_model", "free_only", "recall_threshold", "double_tap_window", "thinking", "max_tokens", "animations", "gemini_fallbacks", "slow_model_seconds", "playground_timeout", "canvas_days", "trial_url"):
             if name in data:
                 setattr(cfg, name, data[name])
         if "notes_dir" in data:

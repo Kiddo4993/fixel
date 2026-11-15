@@ -232,15 +232,15 @@ async def test_ctrl_c_stops_a_running_command_not_fixel(tmp_path, console, monke
 
 async def test_startup_banner_comes_before_model_errors(tmp_path, console, monkeypatch):
     def no_key(alias, cfg):
-        raise ProviderError("No Anthropic API key yet. Run `fixel setup`.")
+        raise ProviderError("No Gemini API key yet. Run `fixel setup`.")
 
     monkeypatch.setattr(app_module.permissions, "input_monitoring_granted", lambda: False)
     monkeypatch.setattr(app_module.permissions, "screen_recording_granted", lambda: True)
     app = FixelApp(Config(home=tmp_path), UI(console), provider_factory=no_key, casefile=CaseFile(tmp_path / "c.db"))
     await app.startup()
     out = console.file.getvalue()
-    assert out.index("Fixel") < out.index("No Anthropic API key")
-    assert "claude-sonnet-5-5" in out
+    assert out.index("Fixel") < out.index("No Gemini API key")
+    assert "gemini-3.6-flash" in out
 
 
 ERR2 = "MODE: error\nKEY: ModuleNotFoundError: No module named 'numpy'\n---\n**Cause:** deeper look.\n"
@@ -439,3 +439,31 @@ async def test_messages_point_to_slash_commands(tmp_path, console):
     await app.handle_action("follow")
     out = console.file.getvalue()
     assert "/deeper" in out and "/worked" in out and "/follow" in out and "⌃" not in out
+
+
+async def test_open_shows_a_case_whose_question_looks_like_markup(tmp_path, console):
+    app = make_app(tmp_path, console, FakeProvider())
+    case_id = app.casefile.save(case_id=None, mode="general", key="", question="why does ls [/usr/bin] fail",
+                                answer="It's a path.", shot_paths=[])
+    await app.handle_command(f"/open {case_id}")
+    assert "[/usr/bin]" in console.file.getvalue()
+
+
+async def test_a_failed_screenshot_does_not_turn_off_the_hotkey(tmp_path, console):
+    import asyncio
+
+    app = make_app(tmp_path, console, FakeProvider())
+    shots = []
+
+    async def flaky_capture_once():
+        shots.append(1)
+        if len(shots) == 1:
+            raise ValueError("not a PNG")
+
+    app.capture_once = flaky_capture_once
+    worker = asyncio.create_task(app._capture_worker())
+    for _ in range(2):
+        app._hotkeys.put_nowait(None)
+        await asyncio.sleep(0.01)
+    worker.cancel()
+    assert len(shots) == 2  # the second ⌥⌥ still worked

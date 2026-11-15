@@ -25,11 +25,18 @@ async def _run(*args: str) -> int:
 async def capture_region(dest: Path) -> bytes | None:
     """Let the user drag-select a region and save it to `dest`. None if they pressed Esc."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    await _run("screencapture", "-i", "-x", str(dest))
+    # -t png: without it macOS uses the user's own screenshot format (often JPG or HEIC), and Fixel
+    # sends every shot to the model labelled as a PNG.
+    await _run("screencapture", "-i", "-x", "-t", "png", str(dest))
     if not dest.exists() or dest.stat().st_size == 0:
         return None
     data = dest.read_bytes()
-    if max(png_size(data)) > MAX_EDGE:
+    try:
+        size = png_size(data)
+    except ValueError:  # not a PNG after all: drop it rather than send the model something unreadable
+        dest.unlink(missing_ok=True)
+        return None
+    if max(size) > MAX_EDGE:
         await _run("sips", "-Z", str(MAX_EDGE), str(dest))
         data = dest.read_bytes()
     return data

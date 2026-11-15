@@ -5,6 +5,7 @@ from __future__ import annotations
 import getpass
 
 from rich.console import Console
+from rich.markup import escape
 
 from . import permissions
 from .config import Config, get_api_key, set_api_key, write_default_config
@@ -55,13 +56,13 @@ def _check_openai(key: str, model: str) -> str:
     except openai.APIConnectionError:
         return "[yellow]! Couldn't reach OpenAI to check the key (it's saved anyway).[/]"
     except Exception as e:
-        return f"[yellow]! Couldn't reach OpenAI to check the key: {e}[/]"
+        return f"[yellow]! Couldn't reach OpenAI to check the key: {escape(str(e))}[/]"
 
 
-PROVIDERS = (
-    ("anthropic", "Anthropic (Claude)", "sonnet", "https://console.anthropic.com/settings/keys", _check_anthropic),
-    ("gemini", "Google Gemini (optional)", "gemini", "https://aistudio.google.com/apikey", _check_gemini),
-    ("openai", "OpenAI (optional)", "gpt", "https://platform.openai.com/api-keys", _check_openai),
+PROVIDERS = (  # Gemini first: it's the default, and its free tier means Fixel costs nothing
+    ("gemini", "Google Gemini (free tier; use a project without billing)", "gemini", "https://aistudio.google.com/apikey", _check_gemini),
+    ("anthropic", "Anthropic Claude (optional, paid; needs free_only = false)", "sonnet", "https://console.anthropic.com/settings/keys", _check_anthropic),
+    ("openai", "OpenAI (optional, paid; needs free_only = false)", "gpt", "https://platform.openai.com/api-keys", _check_openai),
 )
 
 

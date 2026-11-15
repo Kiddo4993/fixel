@@ -130,7 +130,7 @@ async def test_body_shorter_than_its_length_times_out_quietly(web, capfd, monkey
 
     def short_body():
         sock = socket.create_connection(("127.0.0.1", web.port), timeout=5)
-        sock.sendall(b"POST /api/save HTTP/1.1\r\nHost: x\r\nX-Fixel-Token: T0KEN\r\nContent-Length: 100\r\n\r\n{}")
+        sock.sendall(f"POST /api/save HTTP/1.1\r\nHost: 127.0.0.1:{web.port}\r\nX-Fixel-Token: T0KEN\r\nContent-Length: 100\r\n\r\n{{}}".encode())
         sock.settimeout(5)
         try:
             return sock.recv(100)  # the server gives up and closes: b""
@@ -148,13 +148,14 @@ async def test_client_that_disconnects_mid_run_leaves_no_traceback(web, capfd):
     def hang_up():
         sock = socket.create_connection(("127.0.0.1", web.port), timeout=5)
         body = b'{"lang": "python", "code": "x"}'
-        sock.sendall(b"POST /api/run HTTP/1.1\r\nHost: x\r\nX-Fixel-Token: T0KEN\r\nContent-Length: "
+        sock.sendall(f"POST /api/run HTTP/1.1\r\nHost: 127.0.0.1:{web.port}\r\n".encode() + b"X-Fixel-Token: T0KEN\r\nContent-Length: "
                      + str(len(body)).encode() + b"\r\n\r\n" + body)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
         sock.close()  # reset: the server's reply hits a broken connection
 
     await asyncio.to_thread(hang_up)
     await asyncio.sleep(0.3)
+    assert web.runs  # it got as far as running, so the reply really did hit a closed connection
     assert "Traceback" not in capfd.readouterr().err
 
 
@@ -177,3 +178,10 @@ async def test_monaco_files_are_served_locally_without_a_token(tmp_path):
         assert (await call(server, "GET", "/monaco/vs/editor/editor.main.css", token=None))[0] == 502
     finally:
         server.stop()
+
+
+async def test_requests_for_another_host_are_refused(web):
+    # DNS rebinding: evil.example resolves to 127.0.0.1, so the browser sends Host: evil.example
+    assert (await call(web, "GET", "/", token=None, headers={"Host": "evil.example"}))[0] == 403
+    assert (await call(web, "GET", "/api/state", headers={"Host": f"evil.example:{web.port}"}))[0] == 403
+    assert (await call(web, "GET", "/api/state", headers={"Host": f"localhost:{web.port}"}))[0] == 200

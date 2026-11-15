@@ -1,0 +1,13 @@
+name = "fixel-trial"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# The Gemini key is NOT here: it's a secret (`npx wrangler secret put GEMINI_API_KEY`).
+[vars]
+DAILY_PER_INSTALL = "3"   # free questions per Fixel install per UTC day
+DAILY_PER_IP = "30"       # per network: a whole school can share one IP
+DAILY_TOTAL = "200"       # everyone together; keeps the owner's own free quota safe
+
+[[kv_namespaces]]
+binding = "TRIAL"
+id = "REPLACE_WITH_KV_ID"  # from `npx wrangler kv namespace create TRIAL`

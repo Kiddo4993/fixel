@@ -146,7 +146,18 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args) -> None:  # keep Fixel's terminal clean
         pass
 
+    def _host_ok(self) -> bool:
+        """Only answer requests addressed to 127.0.0.1 / localhost. A web page that points its own domain
+        at 127.0.0.1 (DNS rebinding) sends its domain as Host, so it gets nothing, not even the page."""
+        port = self.playground.port
+        if self.headers.get("Host", "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            return True
+        self._json(403, {"error": "Open the playground from Fixel with /web."})
+        return False
+
     def do_GET(self) -> None:
+        if not self._host_ok():
+            return
         url = urlsplit(self.path)
         if url.path == "/":
             self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -162,6 +173,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(*route(parse_qs(url.query)))
 
     def do_POST(self) -> None:
+        if not self._host_ok():
+            return
         routes = {"/api/run": self.playground.api_run, "/api/ask": self.playground.api_ask,
                   "/api/save": self.playground.api_save}
         route = routes.get(urlsplit(self.path).path)

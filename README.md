@@ -23,7 +23,7 @@ You don't copy and paste anything. Screenshot the problem, and Fixel reads it, w
 
 It remembers what worked. When something you've solved before shows up again, Fixel hands the AI the fix that worked last time. Type `/worked` to tell it which fixes to trust.
 
-It runs on your own Claude, Gemini or OpenAI key, kept in the macOS Keychain. There's no account, no server and no subscription.
+It runs on Gemini's free tier by default, with your own key kept in the macOS Keychain. There's no account, no server and no subscription. Claude and OpenAI keys work too if you turn off free mode.
 
 It also has a learn mode that gives hints instead of answers, a built-in IDE for Python, Java, JavaScript and C++, and Canvas homework planning that syncs to Notion.
 
@@ -68,7 +68,7 @@ fixel setup
 ```
 
 It will:
-1. Ask for your **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com/settings/keys)) and, optionally, a **Gemini key** ([aistudio.google.com](https://aistudio.google.com/apikey)) or **OpenAI key** ([platform.openai.com](https://platform.openai.com/api-keys)). Keys go into the macOS Keychain, never into a file.
+1. Ask for your **Gemini API key** ([aistudio.google.com](https://aistudio.google.com/apikey)). Make it in a Google Cloud project **without billing** so it stays on the free tier (AI Studio's API keys page shows each project's plan). Optionally add an **Anthropic** ([console.anthropic.com](https://console.anthropic.com/settings/keys)) or **OpenAI** key ([platform.openai.com](https://platform.openai.com/api-keys)); those are paid, so Fixel only uses them after you set `free_only = false`. Keys go into the macOS Keychain, never into a file.
 2. Check that the key works and the model exists.
 3. Open System Settings for **Input Monitoring** (the hotkey) and **Screen Recording** (screenshots). Switch Terminal on in both, then quit and reopen Terminal.
 
@@ -150,16 +150,18 @@ On older Claude Code: `/plugin marketplace add Kiddo4993/fixel`, then `/plugin i
 
 ## Customize
 
-- `~/.fixel/config.toml` sets the default model, model IDs, the backup Gemini models used when Google is busy or slow (`gemini_fallbacks`, `slow_model_seconds`), the double-tap speed, the notes folder, and how closely a past problem must match before Fixel reuses it (`recall_threshold`).
+- `~/.fixel/config.toml` sets free mode (`free_only = true` by default: only Gemini's free-tier models, so no API credits are spent), the default model, model IDs, the backup Gemini models used when Google is busy or slow (`gemini_fallbacks`, `slow_model_seconds`), the double-tap speed, the notes folder, and how closely a past problem must match before Fixel reuses it (`recall_threshold`).
 - `fixel/prompts.py` holds Fixel's personality and answer formats. Edit it to change how Fixel talks.
 
 ## Privacy & cost
 
-Screenshots go only to the model provider you've selected (Anthropic, Google, or OpenAI). `/canvas` sends that same provider your assignment titles, classes, due dates and points (never your token), and sends Notion only the rows it writes. The case file, notes, and screenshots stay in `~/.fixel` and `~/Fixel Notes`. Claude bills per use, typically a fraction of a cent to a few cents per question; Opus costs more than Sonnet. Gemini has a free tier with rate limits.
+Screenshots go only to the model provider you've selected (Anthropic, Google, or OpenAI). `/canvas` sends that same provider your assignment titles, classes, due dates and points (never your token), and sends Notion only the rows it writes. The case file, notes, and screenshots stay in `~/.fixel` and `~/Fixel Notes`. Claude bills per use, typically a fraction of a cent to a few cents per question; Opus costs more than Sonnet. Gemini has a free tier with rate limits, but on the free tier Google may use what you send (screenshots included) to improve its products, so don't screenshot anything private.
 
 ## FAQ
 
-**What does it cost?** Fixel is free. You pay your AI provider per question: typically a fraction of a cent to a few cents with Claude Sonnet, more with Opus. Gemini has a free tier.
+**Do I need a key to try it?** No. Without a Gemini key Fixel gives you 3 free questions a day through its trial server. After that, add your own key with `/api gemini` (free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)).
+
+**What does it cost?** Nothing, by default: Fixel uses only Gemini's free-tier models and refuses paid ones while `free_only = true`. The free tier allows a few questions a minute and a daily cap; when one model's quota runs out Fixel moves to the next free one. Keep the key in a project without billing, because Google bills every request from a project that has billing on. With `free_only = false` you can use Claude (a fraction of a cent to a few cents per question with Sonnet, more with Opus) or OpenAI.
 
 **Does my screen get uploaded somewhere?** Only the region you select, only when you press Enter, and only to the provider you picked. Reading the text in a screenshot happens on your Mac (Apple's Vision framework), and your past cases stay in `~/.fixel`.
 

@@ -519,3 +519,22 @@ def test_due_labels_stay_short():
 def test_only_the_tick_is_green_on_handed_in_work(console):
     UI(console).canvas_table([make(submitted=True)], {}, NOW, 14)
     assert "✓ Lab 1" in console.file.getvalue()
+
+
+async def test_make_plans_keeps_batches_that_finished_before_a_failure():
+    from fixel.canvas.planner import BATCH
+
+    first = [make(uid=f"assignment-{n}") for n in range(BATCH)]
+    second = [make(uid="assignment-late")]
+    reply = json.dumps([{"id": a.uid, "priority": "Low", "hours": 1, "start_by": "2026-10-29", "tip": "t"} for a in first])
+    provider = FakeProvider([reply, "not json at all"])
+    kept: dict = {}
+    with pytest.raises(PlannerError):
+        await make_plans(provider, first + second, date(2026, 10, 28), into=kept)
+    assert len(kept) == BATCH  # already paid for: not asked for again on the next sync
+
+
+def test_feed_link_never_travels_over_plain_http():
+    net = FakeNet().on("GET", FEED, lambda url, body: (200, ICS.encode()))
+    CalendarFeed(FEED.replace("https://", "http://"), net).upcoming(NOW, 14)
+    assert net.calls[0][1] == FEED

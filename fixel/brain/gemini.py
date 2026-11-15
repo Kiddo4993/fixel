@@ -43,11 +43,45 @@ def make_config(system: str, model: str = "", *, deep: bool = False):
 
 
 class _Busy(Exception):
-    """This model is overloaded or rate-limited and nothing was streamed yet: try the next one."""
+    """This model is overloaded, rate-limited or missing, and nothing was streamed yet: try the next one."""
 
-    def __init__(self, code: int) -> None:
+    def __init__(self, code: int, quota: "Quota | None" = None) -> None:
         super().__init__(code)
         self.code = code
+        self.quota = quota
+
+
+class Quota:
+    """What a 429 says about the free tier: is the limit daily, and how long until it resets?"""
+
+    def __init__(self, daily: bool, retry_seconds: float | None) -> None:
+        self.daily = daily
+        self.retry_seconds = retry_seconds
+
+    @classmethod
+    def from_error(cls, details) -> "Quota":
+        """Read Google's QuotaFailure/RetryInfo details. Anything missing or odd just means 'unknown'."""
+        daily, retry = False, None
+        error = details.get("error", {}) if isinstance(details, dict) else {}
+        for item in error.get("details", []) if isinstance(error, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            for violation in item.get("violations", []) or []:
+                if isinstance(violation, dict) and "PerDay" in str(violation.get("quotaId", "")):
+                    daily = True
+            delay = item.get("retryDelay")
+            if isinstance(delay, str) and delay.endswith("s"):
+                try:
+                    retry = float(delay[:-1])
+                except ValueError:
+                    pass
+        return cls(daily, retry)
+
+    def advice(self) -> str:
+        if self.daily:
+            return "Gemini's free daily limit is used up on every free model. It resets at midnight Pacific time."
+        wait = f"about {max(1, round(self.retry_seconds))}s" if self.retry_seconds else "a minute"
+        return f"Gemini's free tier allows only a few questions a minute. Wait {wait}, then press Enter."
 
 
 class GeminiProvider:
@@ -70,10 +104,14 @@ class GeminiProvider:
         self.retry_delay = retry_delay
         self.slow_after = slow_after  # seconds without a first word before trying the next model
         self._client = client or genai.Client(api_key=api_key)
+        self._out_for_today: set[str] = set()  # models whose free daily quota ran out this session
 
     async def stream(self, turns: list[Turn], system: str, *, deep: bool = False) -> AsyncIterator[str]:
         contents = to_contents(turns)
-        models = [self.model, *self.fallbacks]
+        models = [m for m in (self.model, *self.fallbacks) if m not in self._out_for_today]
+        if not models:
+            raise ProviderError(Quota(True, None).advice())
+        last_quota: Quota | None = None
         for index, model in enumerate(models):
             self.last_model = model
             # The last model gets unlimited patience so there's always an answer (Ctrl+C still stops it).
@@ -84,9 +122,15 @@ class GeminiProvider:
                     yield text
                 return
             except _Busy as busy:
+                if busy.quota is not None:
+                    last_quota = busy.quota
+                    if busy.quota.daily:  # don't spend a request on it again until Fixel restarts
+                        self._out_for_today.add(model)
                 if index == len(models) - 1:
-                    if busy.code == 429:
-                        raise ProviderError("Gemini's rate limit hit (the free tier is small). Wait a minute, then press Enter.") from busy
+                    if busy.code == 404:
+                        raise ProviderError(f"Gemini model '{model}' wasn't found. Fix it in ~/.fixel/config.toml.") from busy
+                    if last_quota is not None:
+                        raise ProviderError(last_quota.advice()) from busy
                     raise ProviderError("Google's Gemini models are all busy right now. Wait a moment, then press Enter.") from busy
 
     async def _stream_model(
@@ -132,6 +176,10 @@ class GeminiProvider:
             except errors.APIError as e:
                 code = e.code or 0
                 busy = code == 429 or code >= 500
+                if code == 429 and not yielded:  # a used-up quota won't refill in a second: try the next model
+                    raise _Busy(code, Quota.from_error(e.details)) from e
+                if code == 404 and not yielded:  # a retired fallback shouldn't stop the others from answering
+                    raise _Busy(code) from e
                 if busy and not yielded:
                     if attempt == 0:
                         await asyncio.sleep(self.retry_delay)
@@ -140,8 +188,6 @@ class GeminiProvider:
                 message = e.message or str(e)
                 if code in (401, 403) or "api key" in message.lower():
                     raise ProviderError("Google rejected the Gemini API key. Run `fixel setup`.", auth=True) from e
-                if code == 404:
-                    raise ProviderError(f"Gemini model '{model}' wasn't found. Fix it in ~/.fixel/config.toml.") from e
                 if busy:
                     raise ProviderError(f"Gemini ({model}) stopped mid-answer because it got busy. Press Enter to retry.") from e
                 raise ProviderError(f"Gemini error {code}: {message}") from e

@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+**Free trial**
+- No Gemini key yet? Fixel answers 3 questions a day through its free trial server (server/trial, a Cloudflare Worker that holds the key). After that it asks you to add your own free key with `/api gemini`. With your own key the trial is never used.
+
+**Free by default**
+- New `free_only` setting, on by default: Fixel uses only Gemini's free-tier models and refuses Claude, OpenAI and paid-only Gemini models, so it never spends API credits. Set `free_only = false` to allow them.
+- Gemini is the default model. The backup models are now free-tier ones (`gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`); `gemini-3.5-flash` is no longer free.
+- A rate limit moves straight on to the next free model instead of retrying the same one, a model whose daily quota is used up is skipped for the rest of the session, and the error says how long to wait or that the daily limit resets at midnight Pacific.
+- A retired backup model no longer stops the others from answering.
+
+**Fixes**
+- Screenshots are always saved as PNG. With macOS set to save JPG or HEIC screenshots, the first shot used to crash the hotkey for the rest of the session.
+- One failed screenshot no longer turns off the hotkey.
+- `/open` no longer crashes on a case whose question contains something like `[/usr/bin]`.
+- `/cases`, `/open` and `/worked` report a damaged case file instead of quitting Fixel.
+- `/canvas` keeps the plans from batches that finished before a later batch failed, so it doesn't pay to plan them again.
+- A calendar feed link pasted with `http://` is fetched over https, so the secret link isn't sent unencrypted.
+- A typo in `config.toml` gives a one-line message instead of a traceback.
+
+**Security**
+- The playground server only answers requests addressed to 127.0.0.1 or localhost, which blocks DNS-rebinding pages.
+- The test suite can't read or overwrite your real Keychain keys or reach the network.
+
 ## 0.2.0 (2026-11-03)
 
 The first public release.

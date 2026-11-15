@@ -188,9 +188,12 @@ class CanvasCommand:
         if provider is None:
             self.ui.warn("No AI model is ready, so no priorities this time. /api adds a key; /canvas tries again.")
             return
+        if getattr(provider, "trial", False):  # the trial's few daily questions are for screenshots
+            self.ui.warn("Priorities need your own Gemini key (free): /api gemini, then /canvas again.")
+            return
         self.ui.info(f"Planning {len(new)} assignment{'s' if len(new) != 1 else ''} with {provider.name}…")
         try:
-            store.plans.update(await make_plans(provider, new, now.date()))
+            await make_plans(provider, new, now.date(), into=store.plans)
         except Exception as e:  # PlannerError/ProviderError are expected; anything else is an SDK surprise
             reason = str(e) if isinstance(e, (PlannerError, ProviderError)) else f"Unexpected error from {provider.name}: {e!r}."
             self.ui.warn(f"{reason} Assignments still synced; /canvas tries planning again.")

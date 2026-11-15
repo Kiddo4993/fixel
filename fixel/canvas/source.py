@@ -144,7 +144,10 @@ class CalendarFeed:
     """Canvas's calendar feed (Calendar → Calendar Feed). No token needed, but no submitted status either."""
 
     def __init__(self, url: str, fetch: Fetch = urlopen_fetch) -> None:
-        self.url = "https://" + url.strip()[len("webcal://"):] if url.strip().startswith("webcal://") else url.strip()
+        url = url.strip()
+        scheme = next((s for s in ("webcal://", "http://") if url.lower().startswith(s)), None)
+        # The feed link is a secret (anyone with it reads your calendar), so it only travels over https.
+        self.url = "https://" + url[len(scheme):] if scheme else url
         self.base = f"https://{urlsplit(self.url).netloc}"
         self._fetch = fetch
 

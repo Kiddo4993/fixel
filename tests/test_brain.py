@@ -47,14 +47,14 @@ def test_make_provider_unknown_alias(tmp_path):
 def test_make_provider_missing_key(tmp_path, monkeypatch):
     monkeypatch.setattr(brain, "get_api_key", lambda vendor: None)
     with pytest.raises(ProviderError) as excinfo:
-        make_provider("sonnet", Config(home=tmp_path))
+        make_provider("sonnet", Config(home=tmp_path, free_only=False))
     assert excinfo.value.auth
 
 
 def test_make_provider_picks_vendor(tmp_path, monkeypatch):
     from fixel.brain.openai import OpenAIProvider
     monkeypatch.setattr(brain, "get_api_key", lambda vendor: f"key-{vendor}")
-    cfg = Config(home=tmp_path)
+    cfg = Config(home=tmp_path, free_only=False)
     opus = make_provider("opus", cfg)
     assert isinstance(opus, ClaudeProvider) and opus.name == "claude-opus-5-5"
     assert isinstance(make_provider("gemini", cfg), GeminiProvider)
@@ -194,7 +194,7 @@ async def test_fake_provider_records_deep_and_answering_model():
 def test_make_provider_passes_gemini_fallbacks(tmp_path, monkeypatch):
     monkeypatch.setattr(brain, "get_api_key", lambda vendor: "k")
     provider = make_provider("gemini", Config(home=tmp_path))
-    assert provider.fallbacks == ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    assert provider.fallbacks == ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
 
 
 async def test_gemini_moves_on_from_a_model_that_is_too_slow_to_start():
@@ -220,3 +220,114 @@ async def test_gemini_deep_thinking_gets_more_patience():
 def test_make_provider_passes_slow_model_setting(tmp_path, monkeypatch):
     monkeypatch.setattr(brain, "get_api_key", lambda vendor: "k")
     assert make_provider("gemini", Config(home=tmp_path)).slow_after == 20
+
+
+# ---- free mode: never spend API credits
+
+def test_free_only_refuses_paid_vendors(tmp_path, monkeypatch):
+    monkeypatch.setattr(brain, "get_api_key", lambda vendor: "k")
+    cfg = Config(home=tmp_path, free_only=True)
+    for alias in ("sonnet", "opus", "gpt"):
+        with pytest.raises(ProviderError, match="no free tier"):
+            make_provider(alias, cfg)
+    assert isinstance(make_provider("gemini", cfg), GeminiProvider)
+
+
+def test_free_only_refuses_gemini_models_without_a_free_tier(tmp_path, monkeypatch):
+    monkeypatch.setattr(brain, "get_api_key", lambda vendor: "k")
+    cfg = Config(home=tmp_path, free_only=True, models={"gemini": "gemini-3.1-pro-preview"})
+    with pytest.raises(ProviderError, match="isn't on Gemini's free tier"):
+        make_provider("gemini", cfg)
+
+
+def test_free_only_drops_paid_fallbacks(tmp_path, monkeypatch):
+    monkeypatch.setattr(brain, "get_api_key", lambda vendor: "k")
+    cfg = Config(home=tmp_path, free_only=True, gemini_fallbacks=["gemini-3.5-flash", "gemini-2.5-flash"])
+    assert make_provider("gemini", cfg).fallbacks == ["gemini-2.5-flash"]
+    cfg.free_only = False
+    assert make_provider("gemini", cfg).fallbacks == ["gemini-3.5-flash", "gemini-2.5-flash"]
+
+
+def test_free_only_reads_from_config_file(tmp_path):
+    from fixel.config import load_config
+
+    (tmp_path / "config.toml").write_text("free_only = false\n")
+    assert load_config(tmp_path).free_only is False
+    assert load_config(tmp_path / "missing").free_only is True  # free unless you opt out
+
+
+def test_a_config_typo_is_a_friendly_error(tmp_path):
+    from fixel.config import ConfigError, load_config
+
+    (tmp_path / "config.toml").write_text("default_model = gemini\n")  # missing quotes
+    with pytest.raises(ConfigError, match="has a typo"):
+        load_config(tmp_path)
+
+
+def _quota_error(daily: bool, delay: str = "37s"):
+    from google.genai import errors
+
+    quota_id = "GenerateRequestsPerDayPerProjectPerModel-FreeTier" if daily else "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
+    return errors.ClientError(429, {"error": {"code": 429, "message": "quota", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": quota_id}]},
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay},
+    ]}})
+
+
+class QuotaClient(FakeGeminiClient):
+    """Models listed in `errors` raise that exception; the rest follow their script."""
+
+    def __init__(self, scripts, errors):
+        super().__init__(scripts)
+        self.errors = errors
+
+    async def generate_content_stream(self, *, model, contents, config):
+        if model in self.errors:
+            self.calls.append((model, config))
+            raise self.errors[model]
+        return await super().generate_content_stream(model=model, contents=contents, config=config)
+
+
+async def test_gemini_rate_limit_moves_on_without_retrying_the_same_model():
+    client = QuotaClient({"gemini-2.5-flash": ["ok"]}, {"gemini-3.6-flash": _quota_error(daily=False)})
+    provider = GeminiProvider("k", "gemini-3.6-flash", fallbacks=["gemini-2.5-flash"], client=client, retry_delay=0)
+    assert await collect(provider) == "ok"
+    assert [model for model, _ in client.calls] == ["gemini-3.6-flash", "gemini-2.5-flash"]
+
+
+async def test_gemini_skips_a_model_whose_daily_quota_ran_out():
+    client = QuotaClient({"gemini-2.5-flash": ["ok"]}, {"gemini-3.6-flash": _quota_error(daily=True)})
+    provider = GeminiProvider("k", "gemini-3.6-flash", fallbacks=["gemini-2.5-flash"], client=client, retry_delay=0)
+    await collect(provider)
+    client.calls.clear()
+    assert await collect(provider) == "ok"
+    assert [model for model, _ in client.calls] == ["gemini-2.5-flash"]  # no request wasted on the empty one
+
+
+async def test_gemini_says_how_long_to_wait_on_the_free_tier():
+    client = QuotaClient({}, {"gemini-3.6-flash": _quota_error(daily=False, delay="12.4s")})
+    provider = GeminiProvider("k", "gemini-3.6-flash", client=client, retry_delay=0)
+    with pytest.raises(ProviderError, match="Wait about 12s"):
+        await collect(provider)
+
+
+async def test_gemini_says_when_every_free_model_is_out_for_the_day():
+    errs = {"gemini-3.6-flash": _quota_error(daily=True), "gemini-2.5-flash": _quota_error(daily=True)}
+    provider = GeminiProvider("k", "gemini-3.6-flash", fallbacks=["gemini-2.5-flash"], client=QuotaClient({}, errs), retry_delay=0)
+    for _ in range(2):  # the second time, without sending anything
+        with pytest.raises(ProviderError, match="daily limit"):
+            await collect(provider)
+
+
+async def test_gemini_skips_a_retired_fallback():
+    client = FakeGeminiClient({"gemini-3.6-flash": 503, "gemini-old": 404, "gemini-2.5-flash": ["ok"]})
+    provider = GeminiProvider(
+        "k", "gemini-3.6-flash", fallbacks=["gemini-old", "gemini-2.5-flash"], client=client, retry_delay=0
+    )
+    assert await collect(provider) == "ok"
+
+
+async def test_gemini_missing_last_model_still_says_not_found():
+    provider = GeminiProvider("k", "gemini-nope", client=FakeGeminiClient({"gemini-nope": 404}), retry_delay=0)
+    with pytest.raises(ProviderError, match="wasn't found"):
+        await collect(provider)
