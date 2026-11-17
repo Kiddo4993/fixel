@@ -56,3 +56,9 @@ def resolve(name: str) -> Lang | None:
     """A language from its name, alias, or fence tag (any case). None if the playground doesn't know it."""
     key = name.strip().lower()
     return LANGS.get(ALIASES.get(key, key))
+
+
+def language_hint(*, runnable_only: bool = False) -> str:
+    """List the command names to suggest for an unknown language."""
+    names = RUNNABLE if runnable_only else LANGS
+    return ", ".join("js" if name == "javascript" else name for name in names)

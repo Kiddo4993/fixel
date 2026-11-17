@@ -26,7 +26,7 @@ from .ocr import recognize_text_async
 from .parse import first_code_block, primary_fix, runnable_command
 from .playground.attachment import CodeAttachment
 from .playground.editor import Editor
-from .playground.langs import LANGS, resolve
+from .playground.langs import LANGS, language_hint, resolve
 from .playground.runner import RunResult
 from .playground.runner import run as run_code
 from .playground.scratch import Scratch
@@ -399,7 +399,7 @@ class FixelApp:
         name = (rest if where.lower() == "terminal" else arg).strip()
         lang = resolve(name) if name else None
         if name and lang is None:
-            self.ui.warn(f"Unknown language '{name}'. Try: python, java, js, cpp, html.")
+            self.ui.warn(f"Unknown language '{name}'. Try: {language_hint()}.")
         elif lang is not None and not lang.run:  # HTML needs a live preview, which only the browser has
             self._web_ide(name)
         else:
@@ -408,7 +408,7 @@ class FixelApp:
     def _web_ide(self, arg: str) -> None:
         lang = resolve(arg) if arg else None
         if arg and lang is None:
-            self.ui.warn(f"Unknown language '{arg}'. Try: python, java, js, cpp, html.")
+            self.ui.warn(f"Unknown language '{arg}'. Try: {language_hint()}.")
         else:
             self.open_web((lang.name, self.scratch.load(lang.name)) if lang else None)
 
@@ -416,7 +416,7 @@ class FixelApp:
         """/code [lang] and /ide here [lang]: the IDE inside this terminal."""
         lang = resolve(arg) if arg else None
         if arg and lang is None:
-            self.ui.warn(f"Unknown language '{arg}'. Try: python, java, js, cpp.")
+            self.ui.warn(f"Unknown language '{arg}'. Try: {language_hint(runnable_only=True)}.")
         elif lang is not None and not lang.run:
             self.ui.info("HTML runs in the browser IDE: /ide web html (or /web html)")
         else:

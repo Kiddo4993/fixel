@@ -5,6 +5,7 @@ from fixel.config import Config
 from fixel.parse import Header
 from fixel.playground.attachment import CodeAttachment
 from fixel.playground.editor import EditorResult
+from fixel.playground.langs import LANGS, Lang
 from fixel.ui import UI
 
 WEB = "MODE: web\nKEY: Acme landing page\n---\n**Design**\n- Type: Inter\n**Code:**\n```html\n<!doctype html><h1>Acme</h1>\n```\n"
@@ -74,7 +75,21 @@ async def test_code_command_rejects_html_and_unknown(tmp_path, console):
     await app.handle_command("/code html")
     await app.handle_command("/code rust")
     out = console.file.getvalue()
-    assert "/web" in out and "Unknown language 'rust'" in out and FakeEditor.opened == []
+    assert "/web" in out and "Unknown language 'rust'. Try: python, java, js, cpp." in out
+    assert FakeEditor.opened == []
+
+
+async def test_unknown_language_hints_follow_the_registry(tmp_path, console, monkeypatch):
+    app = make_app(tmp_path, console)
+    monkeypatch.setitem(LANGS, "css", Lang("css", "CSS", "style.css"))
+
+    await app.handle_command("/ide invalid")
+    await app.handle_command("/web invalid")
+    await app.handle_command("/code invalid")
+
+    out = console.file.getvalue()
+    assert out.count("Unknown language 'invalid'. Try: python, java, js, cpp, html, css.") == 2
+    assert out.count("Unknown language 'invalid'. Try: python, java, js, cpp.") == 1
 
 
 async def test_ctrl_a_in_editor_puts_code_in_tray_and_enter_asks(tmp_path, console):
